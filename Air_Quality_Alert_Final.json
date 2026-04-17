@@ -1,0 +1,356 @@
+{
+  "name": "Air Quality Alert to Discord — Advanced",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "trigger-cron",
+      "name": "Cron Trigger (30m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        300,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openweathermap.org/data/2.5/weather",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "Bangkok"
+            },
+            {
+              "name": "appid",
+              "value": "63c54831a1e12a6737939a6dddedef5d"
+            },
+            {
+              "name": "units",
+              "value": "metric"
+            },
+            {
+              "name": "lang",
+              "value": "th"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "get-weather",
+      "name": "Get Weather",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        40,
+        160
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://api.waqi.info/feed/bangkok/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "5d4f842742879fa7e3b7b6c1c8a5bcdade7cac3a"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "get-aqi",
+      "name": "Get AQI / PM2.5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        300,
+        160
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-data",
+      "name": "Merge All Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        300,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ดึง Weather จาก node ต้นทาง, AQI จาก Merge output (index 0 = merged item)\nconst weatherRaw = $('Get Weather').first().json;\n\n// WAQI response อยู่ใน $('Get AQI / PM2.5')\nconst aqiRaw = $('Get AQI / PM2.5').first().json;\n\n// Weather fields\nconst temp        = weatherRaw?.main?.temp                 ?? null;\nconst humidity    = weatherRaw?.main?.humidity             ?? null;\nconst windSpeed   = weatherRaw?.wind?.speed                ?? null;\nconst windDeg     = weatherRaw?.wind?.deg                  ?? null;\nconst weatherDesc = weatherRaw?.weather?.[0]?.description  ?? '';\n\n// AQI fields — WAQI returns { status:\"ok\", data:{ aqi, iaqi:{...}, city:{name} } }\nconst aqiData     = aqiRaw?.data    ?? {};\nconst iaqi        = aqiData?.iaqi   ?? {};\nconst aqiValue    = aqiData?.aqi    ?? null;\nconst pm25        = iaqi?.pm25?.v   ?? null;\nconst pm10        = iaqi?.pm10?.v   ?? null;\nconst o3          = iaqi?.o3?.v     ?? null;\nconst no2         = iaqi?.no2?.v    ?? null;\nconst so2         = iaqi?.so2?.v    ?? null;\nconst stationName = aqiData?.city?.name ?? 'Bangkok';\n\n// AQI Level classification\nfunction classifyAQI(v) {\n  if (v === null) return { level: 'ไม่มีข้อมูล',         color: 0x95a5a6, emoji: '❓', risk: 'ไม่ทราบ',            advice: 'ไม่มีข้อมูล' };\n  if (v <= 50)   return { level: 'ดีมาก',                color: 0x2ecc71, emoji: '🟢', risk: 'ต่ำ',                advice: 'คุณภาพอากาศดีเยี่ยม สามารถทำกิจกรรมกลางแจ้งได้ตามปกติ' };\n  if (v <= 100)  return { level: 'ปานกลาง',              color: 0xf1c40f, emoji: '🟡', risk: 'ปานกลาง',            advice: 'กลุ่มเสี่ยง (ผู้ป่วยหอบหืด ผู้สูงอายุ เด็กเล็ก) ควรระวัง' };\n  if (v <= 150)  return { level: 'ไม่ดีต่อกลุ่มเสี่ยง', color: 0xe67e22, emoji: '🟠', risk: 'สูงต่อกลุ่มเสี่ยง', advice: 'กลุ่มเสี่ยงควรลดกิจกรรมกลางแจ้ง ควรสวมหน้ากาก N95' };\n  if (v <= 200)  return { level: 'ไม่ดี',                color: 0xe74c3c, emoji: '🔴', risk: 'สูง',                advice: 'ทุกคนควรลดกิจกรรมกลางแจ้ง สวมหน้ากาก N95 หลีกเลี่ยงการออกกำลังกาย' };\n  if (v <= 300)  return { level: 'แย่มาก',               color: 0x9b59b6, emoji: '🟣', risk: 'สูงมาก',            advice: 'หลีกเลี่ยงกิจกรรมกลางแจ้งทั้งหมด ปิดหน้าต่างบ้าน เปิดเครื่องฟอกอากาศ' };\n  return           { level: 'อันตราย',                   color: 0x7f0000, emoji: '⛔', risk: 'อันตราย',           advice: 'อยู่ในอาคารและปิดหน้าต่างประตูทั้งหมด เด็กและผู้สูงอายุห้ามออกนอกบ้านเด็ดขาด' };\n}\n\nfunction classifyPM25(v) {\n  if (v === null) return { level: 'ไม่มีข้อมูล' };\n  if (v <= 25)   return { level: 'ดี (≤25)' };\n  if (v <= 37)   return { level: 'ปานกลาง (≤37)' };\n  if (v <= 50)   return { level: 'เริ่มมีผล (≤50)' };\n  if (v <= 90)   return { level: 'มีผลต่อสุขภาพ (≤90)' };\n  return           { level: 'อันตราย (>90)' };\n}\n\nfunction windDirection(deg) {\n  if (deg === null) return '-';\n  const dirs = ['N','NE','E','SE','S','SW','W','NW'];\n  return dirs[Math.round(deg / 45) % 8];\n}\n\nconst aqiMeta  = classifyAQI(aqiValue);\nconst pm25Meta = classifyPM25(pm25);\n\n// Trend\nconst staticData = $getWorkflowStaticData('global');\nconst prevPm25 = staticData.prevPm25 ? parseFloat(staticData.prevPm25) : null;\nlet trend = 'stable', trendEmoji = '➡️';\nif (prevPm25 !== null && pm25 !== null) {\n  if (pm25 - prevPm25 >  5) { trend = 'rising';  trendEmoji = '📈'; }\n  if (prevPm25 - pm25 >  5) { trend = 'falling'; trendEmoji = '📉'; }\n}\nstaticData.prevPm25 = String(pm25 ?? 0);\n\n// Alert conditions\nconst alertPM25   = pm25     !== null && pm25     > 50;\nconst alertAQI    = aqiValue !== null && aqiValue > 100;\nconst alertTemp   = temp     !== null && temp     > 35;\nconst alertO3     = o3       !== null && o3       > 100;\nconst shouldAlert = alertPM25 || alertAQI || alertTemp || alertO3;\n\nconst reasons = [];\nif (alertPM25) reasons.push(`PM2.5 = **${pm25}** µg/m³ (เกินมาตรฐาน 50)`);\nif (alertAQI)  reasons.push(`AQI = **${aqiValue}** (เกินระดับปลอดภัย 100)`);\nif (alertTemp) reasons.push(`อุณหภูมิ = **${temp}°C** (ร้อนจัด)`);\nif (alertO3)   reasons.push(`Ozone = **${o3}** µg/m³ (เกินมาตรฐาน 100)`);\n\nreturn [{\n  json: {\n    temp, humidity, windSpeed, windDeg, weatherDesc,\n    aqiValue, pm25, pm10, o3, no2, so2, stationName,\n    aqiMeta, pm25Meta, trend, trendEmoji,\n    shouldAlert, reasons,\n    windDirText: windDirection(windDeg),\n    timestamp:   new Date().toISOString(),\n    timestampTH: new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),\n  }\n}];"
+      },
+      "id": "format-classify",
+      "name": "Format & Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.shouldAlert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combineOperation": "all"
+        },
+        "options": {}
+      },
+      "id": "check-threshold",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        300,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const COOLDOWN_MINUTES = 60;\nconst staticData    = $getWorkflowStaticData('global');\nconst lastSent      = staticData.lastAlertSent ? parseInt(staticData.lastAlertSent, 10) : 0;\nconst minutesPassed = (Date.now() - lastSent) / 60000;\n\nif (minutesPassed < COOLDOWN_MINUTES) {\n  return []; // หยุด — cooldown ยังไม่หมด\n}\n\nreturn $input.all();"
+      },
+      "id": "cooldown-check",
+      "name": "Cooldown Check (60m)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\n\nfunction buildBar(value, max, segments = 10) {\n  if (value === null || value === undefined) return '░'.repeat(segments);\n  const filled = Math.min(Math.round((value / max) * segments), segments);\n  return '█'.repeat(filled) + '░'.repeat(segments - filled);\n}\n\nfunction windText(speed, dir) {\n  if (speed === null || speed === undefined) return 'ไม่มีข้อมูล';\n  return `${speed} m/s ${dir}`;\n}\n\nfunction fieldVal(v, unit = 'µg/m³') {\n  if (v === null || v === undefined) return 'ไม่มีข้อมูล';\n  return `${v} ${unit}`;\n}\n\n// Description lines — only include forecast if value exists\nconst descLines = [\n  `**${d.aqiMeta.level}** | ความเสี่ยง: ${d.aqiMeta.risk}`,\n  '',\n];\n\nif (d.reasons && d.reasons.length > 0) {\n  descLines.push(...d.reasons);\n} else {\n  descLines.push('ตรวจพบค่าเกินมาตรฐาน');\n}\n\n// Only add forecast line if value is a real number\nif (d.forecastPm25 !== null && d.forecastPm25 !== undefined && !isNaN(Number(d.forecastPm25))) {\n  descLines.push(`\\n> 🔭 **พยากรณ์ PM2.5 พรุ่งนี้:** ${d.forecastPm25} µg/m³`);\n}\n\nconst pm25Bar = buildBar(d.pm25, 150);\nconst aqiBar  = buildBar(d.aqiValue, 300);\n\nconst body = {\n  embeds: [{\n    title: `${d.aqiMeta.emoji} Air Quality Alert — กรุงเทพมหานคร`,\n    description: descLines.join('\\n'),\n    color: d.aqiMeta.color,\n    fields: [\n      {\n        name: '🌫 PM2.5 (µg/m³)',\n        value: `**${d.pm25 ?? '-'}** µg/m³\\n\\`${pm25Bar}\\` ${d.pm25Meta?.level ?? ''}`,\n        inline: false\n      },\n      {\n        name: '📊 AQI',\n        value: `**${d.aqiValue ?? '-'}**\\n\\`${aqiBar}\\``,\n        inline: true\n      },\n      {\n        name: '🌡 อุณหภูมิ',\n        value: `**${d.temp ?? '-'}°C** 💧${d.humidity ?? '-'}%`,\n        inline: true\n      },\n      {\n        name: '💨 ลม',\n        value: windText(d.windSpeed, d.windDirText),\n        inline: true\n      },\n      {\n        name: '🏭 PM10',\n        value: fieldVal(d.pm10),\n        inline: true\n      },\n      {\n        name: '☁️ Ozone (O₃)',\n        value: fieldVal(d.o3),\n        inline: true\n      },\n      {\n        name: '🔬 NO₂',\n        value: fieldVal(d.no2),\n        inline: true\n      },\n      {\n        name: '📈 แนวโน้ม PM2.5',\n        value: `${d.trendEmoji} ${d.trend === 'rising' ? 'กำลังเพิ่มขึ้น' : d.trend === 'falling' ? 'กำลังลดลง' : 'ทรงตัว'}`,\n        inline: true\n      },\n      {\n        name: '💡 คำแนะนำ',\n        value: d.aqiMeta?.advice ?? '-',\n        inline: false\n      }\n    ],\n    footer: {\n      text: `📍 สถานี: ${d.stationName} | อัปเดต: ${d.timestampTH}`\n    },\n    timestamp: d.timestamp\n  }]\n};\n\nreturn [{ json: { body } }];"
+      },
+      "id": "build-embed",
+      "name": "Build Rich Discord Embed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://discord.com/api/webhooks/1486929962949673191/biceAVCtEMadigs6Yu-rE7bw45mGhUWAelpuPt7YsMWc-VasyxkzopcCplrAmZ3Ka9c5",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-discord",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        160,
+        860
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.lastAlertSent = String(Date.now());\nreturn $input.all();"
+      },
+      "id": "update-cooldown",
+      "name": "Update Cooldown Timestamp",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://discord.com/api/webhooks/1486929962949673191/biceAVCtEMadigs6Yu-rE7bw45mGhUWAelpuPt7YsMWc-VasyxkzopcCplrAmZ3Ka9c5",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"embeds\": [{\"title\": \"⚠️ Air Quality Workflow Error\", \"description\": \"เกิดข้อผิดพลาดในการดึงข้อมูลหรือส่งข้อความ กรุณาตรวจสอบ n8n logs\", \"color\": 16711680}]}",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        440,
+        860
+      ]
+    }
+  ],
+  "connections": {
+    "Cron Trigger (30m)": {
+      "main": [
+        [
+          {
+            "node": "Get Weather",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get AQI / PM2.5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weather": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get AQI / PM2.5": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge All Data": {
+      "main": [
+        [
+          {
+            "node": "Format & Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format & Classify": {
+      "main": [
+        [
+          {
+            "node": "Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Cooldown Check (60m)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Cooldown Check (60m)": {
+      "main": [
+        [
+          {
+            "node": "Build Rich Discord Embed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rich Discord Embed": {
+      "main": [
+        [
+          {
+            "node": "Send to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Discord": {
+      "main": [
+        [
+          {
+            "node": "Update Cooldown Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "_setup": {
+    "env_vars_required": [
+      "OPENWEATHER_API_KEY",
+      "WAQI_TOKEN",
+      "DISCORD_WEBHOOK_URL"
+    ]
+  }
+}
